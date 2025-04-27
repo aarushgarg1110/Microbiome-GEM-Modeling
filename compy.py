@@ -175,11 +175,11 @@ def com_biomass(model, abun_path, sample_com):
     biomass_mets_list = sorted(biomass_mets_list)
 
     # Reading in the abundance file, sort species alphabetically,
-    # and remove species with abundances < 0.0009
+    # and remove species with abundances < 0.0000001
     norm_abund = pd.read_csv(abun_path)
     norm_abund = norm_abund.sort_values("X", ascending=True)
     norm_abund = norm_abund.reset_index(drop=True)
-    norm_abund = norm_abund.loc[~((norm_abund[sample_com] < 0.0009))]
+    norm_abund = norm_abund.loc[~((norm_abund[sample_com] < 0.0000001))]
     norm_abund_list = norm_abund[sample_com].tolist()
 
     # Creating the community biomass reaction
@@ -441,10 +441,10 @@ def compy(abun_filepath, mod_filepath, out_filepath, diet_filepath=None):
         model_path_abun = {}
 
         # Looping through the species abundance, finding the species that have an abundance
-        # above 0.001, and adding them to the model_path_abun_dic into format of
+        # above 0.0000001, and adding them to the model_path_abun_dic into format of
         # "species name : abundace"
         for num in range(len(sample_info[sample])):
-            if sample_info[sample][num] > 0.001:
+            if sample_info[sample][num] >= 0.0000001:
                 species_name = sample_info.index[num]
                 model_path_abun[mod_filepath + species_name + '.mat'] = sample_info[sample][num]
             else:
