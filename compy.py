@@ -179,7 +179,7 @@ def com_biomass(model, abun_path, sample_com):
     norm_abund = pd.read_csv(abun_path)
     norm_abund = norm_abund.sort_values("X", ascending=True)
     norm_abund = norm_abund.reset_index(drop=True)
-    norm_abund = norm_abund.loc[~((norm_abund[sample_com] < 0.0000001))]
+    norm_abund = norm_abund.loc[~((norm_abund[sample_com] < 0.0000000))]
     norm_abund_list = norm_abund[sample_com].tolist()
 
     # Creating the community biomass reaction
@@ -394,6 +394,25 @@ def species_to_community(model, species_model_name):
 
     return model
 
+def prune_zero_abundance(model, zero_abundance_species):
+    metabolites_to_remove = []
+    for met in model.metabolites:
+        for species in zero_abundance_species:
+            if met.id.startswith(f"{species}_"):
+                metabolites_to_remove.append(met)
+                print('Pruning Zero-Abundance metabolite:', met.id)
+                break
+    model.remove_metabolites(metabolites_to_remove)
+
+    reactions_to_remove = []
+    for rxn in model.reactions:
+        for species in zero_abundance_species:
+            if rxn.id.startswith(f"{species}_"):
+                reactions_to_remove.append(rxn.id)
+                print('Pruning Zero-Abundance reaction:', rxn.id)
+                break
+    model.remove_reactions(reactions_to_remove)
+    return model
 
 def compy(abun_filepath, mod_filepath, out_filepath, diet_filepath=None):
     """
@@ -440,15 +459,11 @@ def compy(abun_filepath, mod_filepath, out_filepath, diet_filepath=None):
     # For one specific community sample, create a dictionary of the species and their abundances
         model_path_abun = {}
 
-        # Looping through the species abundance, finding the species that have an abundance
-        # above 0.0000001, and adding them to the model_path_abun_dic into format of
-        # "species name : abundace"
-        for num in range(len(sample_info[sample])):
-            if sample_info[sample][num] >= 0.0000001:
-                species_name = sample_info.index[num]
-                model_path_abun[mod_filepath + species_name + '.mat'] = sample_info[sample][num]
-            else:
-                continue
+        # Add all species and abundances to model_path_abun_dic in format of "species name : abundace"
+        for abundance in range(len(sample_info[sample])):
+            species_name = sample_info.index[abundance]
+            model_path_abun[mod_filepath + species_name + '.mat'] = sample_info[sample][abundance]
+
 
         # Create the first model in the sample, and add it to the final model
         first_species = list(model_path_abun.keys())[0]
@@ -471,6 +486,11 @@ def compy(abun_filepath, mod_filepath, out_filepath, diet_filepath=None):
         # Add the diet and fecal compartments to model
         print_out("Adding diet and fecal compartments")
         clean_model = clean_community(model=final_model)
+
+        # maybe prune here before com_biomass?
+        # Prune zero-abundance species from the model
+        zero_abundance_species = [species.split("/")[-1].split(".")[0] for species, abundance in model_path_abun.items() if abundance < 0.0000001]
+        clean_model = prune_zero_abundance(clean_model, zero_abundance_species)
 
         # Add a community biomass reaction to the model
         print_out("Adding community biomass reaction")
