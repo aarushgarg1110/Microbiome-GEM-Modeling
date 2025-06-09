@@ -1,0 +1,164 @@
+function [reac, exMets, micRea, binOrg, patOrg, reacPat, reacNumb, reacSet, reacTab, reacAbun, reacNumber] = getMappingInfo(modPath, organisms, abunFilePath)
+% This function automatically extracts information from strain abundances in
+% different individuals and combines this information into different tables.
+%
+% USAGE:
+%
+%    [reac, exMets, micRea, binOrg, patOrg, reacPat, reacNumb, reacSet, reacTab, reacAbun, reacNumber] = getMappingInfo(modPath, organisms, abunFilePath, patNumb)
+%
+% INPUTS:
+%   organisms:         nx1 cell array cell array with names of organisms in the study
+%   modPath:           char with path of directory where models are stored
+%   abunFilePath:      char with path and name of file from which to retrieve abundance information
+%   patNumb:           number of individuals in the study
+%
+% OUTPUTS:
+%   reac:              cell array with all the unique set of reactions
+%                      contained in the models
+%   exMets:            cell array with all unique extracellular metabolites
+%                      contained in the models
+%   micRea:            binary matrix assessing presence of set of unique
+%                      reactions for each of the microbes
+%   binOrg:            binary matrix assessing presence of specific strains in
+%                      different individuals
+%   reacPat:           matrix with number of reactions per individual
+%                      (organism resolved)
+%   reacSet:           matrix with names of reactions of each individual
+%   reacTab:           char with names of individuals in the study
+%   reacAbun:          binary matrix with presence/absence of reaction per
+%                      individual: to compare different individuals
+%   reacNumber:        number of unique reactions of each individual
+%
+% .. Author: Federico Baldini 2017-2018
+
+reac = {}; % array with unique set of all the reactions present in the models
+exMets = {}; % array with unique set of all the extracellular metabolites present in the models
+
+models = {};
+parfor i = 1:length(organisms) % find the unique set of all the reactions contained in the models
+    model =readCbModel([modPath filesep organisms{i,1} '.mat']);
+    models{i, 1} = model;
+end
+
+for i = 1:length(organisms) % find the unique set of all the reactions contained in the models
+    smd = models{i, 1};
+    reac = union(reac,smd.rxns);
+    findmets = smd.mets(find(contains(smd.mets,'[e]')));
+    exMets = union(exMets,findmets);
+end
+
+% Code to detect reaction presence in each model and create inary matrix
+% assessing presence of set of unique reactions for each of the microbes
+
+micRea = zeros(length(models), length(reac));
+
+mdlt = length(models);
+parfor i = 1:mdlt
+    model = models{i, 1};
+    micRea(i,:) = ismember(reac,model.rxns)
+end
+
+% creating binary table for abundances
+[abundance] = readtable(abunFilePath);
+
+[binary] = abundance;
+s = size(binary);
+s = s(1, 2);
+binary = binary(:, 2:s);  % removing model info and others
+binary{:,:} = double(binary{:,:}~=0);
+binOrg = binary;
+
+% Compute number of reactions per individual (species resolved)
+
+reacPat = zeros(length(table2cell(binOrg(:, 1))), length(table2cell(binOrg(1, :))));
+cleantabc = table2cell(binOrg);
+for j = 1:length(table2cell(binOrg(1, :)))
+    for i = 1:length(table2cell(binOrg(:, 1)))
+        temp = cell2mat(cleantabc(i, j));
+        if temp == 1
+            reacPat(i, j) = sum(micRea(i, :));
+        end
+    end
+end
+
+% Computing overall (non unique) number of reactions per individual
+
+totReac = [];
+for i = 1:length(reacPat(1, :))
+    totReac(i, 1) = sum(reacPat(:, i));
+end
+
+% Computing number of reactions per organism
+
+reacNumb = [];
+for i = 1:length(micRea(:, 1))
+    reacNumb(i, 1) = sum(micRea(i, :));
+end
+
+% Computing number of organism per individual
+
+patOrg = [];
+for i = 1:length(cleantabc(1, :))
+    patOrg(i, 1) = sum(table2array(binOrg(:, i)));
+end
+patOrg = patOrg';
+
+% number and names of UNIQUE reactions per patient
+% Briefly, the nonunique reaction content of each individual (reacvec) is 
+% retrieved from the binary matrix of microbial presence (binOrg) and each of 
+% the related models. The same is also done using the abundance table for 
+% establishing reactions coefficients (abunvec) on the base of microbial presence. 
+% We end up with two nonunique matrices: (completeset) containing reaction content 
+% for each individual and (completeabunnorm).  Finally, for each individual using 
+% a list of unique reactions in all the study (reac) all the matches are found and 
+% the correspondent abundances summed up (numbtab). 
+
+reacSet = {};
+reacNumber = [];
+
+for j = 1: length(table2cell(binOrg(1, :)))
+    abunvec = [];
+    reacvec = [];
+    for i = 1: length(table2cell(binOrg(:, 1)))
+        if (cell2mat(table2cell(binOrg(i, j)))) == 1
+            model = models{i, 1};
+            reacvec = vertcat(reacvec, model.rxns);
+            abunvec((length(abunvec) + 1): ((length(abunvec)) + length(model.rxns))) = table2array(abundance(i, j + 1));
+        end
+    end
+
+    completeset(1:length(reacvec), j) = reacvec;  % to get lists of reactions per each individual
+    completeabunorm(1:length(reacvec), j) = abunvec';  % matrix with abundance coefficients for normalization
+    reacSet(1:length(unique(reacvec)), j) = unique(reacvec);  % to get lists of reactions per each individual
+    reacNumber(j) = length(unique(reacvec));
+end
+
+reacLng = length(reac);
+
+parfor j = 2:size(abundance,2)
+    for i = 1:reacLng
+        indrxn = find(strcmp(reac(i, 1), completeset(:, j-1)));
+        numbtab(i, j-1) = sum(completeabunorm(indrxn,j-1));
+    end
+end
+
+reacAbun = [reac, num2cell(numbtab)];
+
+
+% presence/absence of reaction per patient: to compare different patients
+% with pCoA
+reacTab = zeros(length(reac), length(reacPat(1, :)));
+
+
+parfor k = 1: length(reacPat(1, :))
+    match = zeros(1,length(reac));
+        for i = 1: length(reac)
+            for j = 1: length(reacSet(:, 1))
+                if strcmp(reac(i), reacSet(j, k)) == 1  % the 2 reactions are equal
+                    match(i) = 1;
+                end
+            end
+        end
+    reacTab(:, k) = match
+end
+end
