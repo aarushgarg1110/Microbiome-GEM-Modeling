@@ -1,54 +1,77 @@
-import os
-import csv
-from tqdm import tqdm
-import pandas as pd
-import cobra.io
+"""
+Microbiome Community Model Builder (ComPy)
+
+Optimized Python implementation of mgPipe community modeling pipeline.
+Transforms individual AGORA species reconstructions into integrated community models
+with diet and fecal compartments for host-microbiome interaction modeling.
+"""
+
+# Computational biology imports
+import cobra
 from cobra import Reaction, Metabolite
-from concurrent.futures import ProcessPoolExecutor
+from cobra.io import load_matlab_model
+
+# Numerical computing
 import numpy as np
 from scipy.sparse import csr_matrix, hstack
 from scipy.io import savemat
 
-# Model configuration constants
-EXCHANGE_LOWER_BOUND = -1000.0
-EXCHANGE_UPPER_BOUND = 10000.0
-TRANSPORT_LOWER_BOUND = 0.0
-TRANSPORT_UPPER_BOUND = 10000.0
+# Data processing
+import pandas as pd
+
+# System utilities
+import os
+from concurrent.futures import ProcessPoolExecutor
+from tqdm import tqdm
+
+# Metabolite exchange bounds (mmol/gDW/h)
+EXCHANGE_BOUNDS = (-1000.0, 10000.0) # Max uptake and secretion rates
+
+# Transport reaction bounds (mmol/gDW/h) 
+TRANSPORT_BOUNDS = (0.0, 10000.0) # Unidirectional transport
+
+# Species inclusion threshold
 ABUNDANCE_THRESHOLD = 1e-7
 
-def print_out(string, fixed_length=20, padding_str="-"):
+# Default Coupling Factor (Used in https://doi.org/10.4161/gmic.22370)
+COUPLING_FACTOR = 400
+
+def create_rxn(rxn_identifier: str, name: str, subsystem: str, bounds: tuple) -> cobra.Reaction:
     """
-    Helper function that prints a string with a fixed length and padding on both sides.
+    Create a COBRA reaction with specified bounds and metadata.
     
-    Does not support f strings.
-
-    INPUTS:
-        string: string to be printed
-        fixed_length: length of the printed string
-        padding_str: string to be used for padding
-
-    OUTPUTS:
-        None
+    Args:
+        rxn_identifier: Unique reaction ID
+        name: Human-readable reaction name
+        subsystem: Metabolic subsystem classification
+        bounds: Lower and upper bounds of reaction (mmol/gDW/h)
+        
+    Returns:
+        Configured COBRA reaction object
     """
-    padding = padding_str * 10
-    formatted_string = "{:-^{}}".format(string, fixed_length - len(padding))
-    padded_string = padding + formatted_string + padding
-    print(padded_string)
-
-def create_rxn(rxn_identifier, name, subsystem, lb, ub) -> cobra.Reaction:
     rxn = Reaction(rxn_identifier)
     rxn.name = name
     rxn.subsystem = subsystem
+    lb, ub = bounds
     rxn.lower_bound = lb
     rxn.upper_bound = ub
-
     return rxn
 
-def clean_community(model):
+def add_diet_fecal_compartments(model: cobra.Model) -> cobra.Model:
     """
-    Takes a combined community model and creates fecal and diet transport and exchange reactions.
+    Add diet and fecal compartments to community model for host interaction.
     
-    This function adds 4 types of reactions for every general metabolite in the lumen:
+    Biological System Modeled:
+    - Diet compartment [d]: Nutrients from host dietary intake
+    - Lumen compartment [u]: Shared microbial metabolite pool  
+    - Fecal compartment [fe]: Metabolites excreted from host system
+    
+    Transport Chain: Diet[d] → DUt → Lumen[u] → UFEt → Fecal[fe] → EX_
+    
+    This creates the host-microbiome metabolite exchange interface essential
+    for modeling dietary interventions and metabolite production.
+
+    For every general metabolite in the lumen, 4 reactions will be added:
         (diet)
         EX_2omxyl[d]: 2omxyl[d] <=>
         DUt_2omxyl: 2omxyl[d] <=> 2omxyl[u]
@@ -56,141 +79,110 @@ def clean_community(model):
         (fecal)
         UFEt_2omxyl: 2omxyl[u] <=> 2omxyl[fe]
         EX_2omxyl[fe]: 2omxyl[fe] <=>
+    
+    Args:
+        model: Community model with species-tagged reactions
         
-    INPUTS:
-        model: a .mat file of an AGORA single cell model
-  
-    OUTPUTS:
-        model: updated model with fecal and diet compartments
+    Returns:
+        Model with diet and fecal compartments and exchange and transport reactions
     """
     # Delete all EX_ reaction artifacts from the single cell models
     # E.g., EX_dad_2(e): dad_2[e] <=>, EX_thymd(e): thymd[e] <=>
     to_remove = [r for r in model.reactions if "_EX_" in r.id or "(e)" in r.id]
     model.remove_reactions(to_remove)
 
-    existing_met_ids = [met.id for met in model.metabolites]
-    existing_rxn_ids = [rxn.id for rxn in model.reactions]
-
     # Create the diet and fecal compartments for reactions and metabolites
     # Get all of our general extracellular metabolites
-    gen_mets = []
+    general_mets = []
     for reac in model.reactions:
         if "IEX" in reac.id:
             iex_reac = model.reactions.get_by_id(reac.id)
             # Pick only general (unlabeled) metabolites on the LHS
             for met in iex_reac.reactants:
                 if "[u]" in met.id:
-                    gen_mets.append(met.id)
-    gen_mets = set(gen_mets)
+                    general_mets.append(met.id)
+    general_mets = set(general_mets)
 
-    # Creating the diet and fecal compartments
-    for met_name in gen_mets:
+    # Create diet and fecal compartments, with new transport and exchange reactions
+    existing_mets = {m.id for m in model.metabolites}
+    existing_rxns = {r.id for r in model.reactions}
+    
+    for lumen_met in general_mets:
+        base_name = lumen_met.split('[')[0]  # Remove [u] suffix
 
-        clean_met_name = met_name.split('[')[0] # strip [u] from end
-        d_met_name = clean_met_name + "[d]" # met[d]
-        dut_name = "DUt_" + clean_met_name # Rxn name = DUt_met
-        fe_met_name = clean_met_name +  '[fe]' # met[fe]
-        ufet_name = 'UFEt_' + clean_met_name # Rxn name = UFEt_met
-
-        # Creating the [d] exchange reactions
-        # E.g., EX_2omxyl[d]: 2omxyl[d] <=>
-        # Ensure there are no duplicates if user runs function more than once
-        if d_met_name not in existing_met_ids:
-            reac_name = "EX_" + d_met_name
-            reaction = create_rxn(reac_name, d_met_name + 'diet exchange', ' ', EXCHANGE_LOWER_BOUND, EXCHANGE_UPPER_BOUND)
-            model.add_reactions([reaction])
-            model.add_metabolites([Metabolite(d_met_name, compartment="d")])
-            new_dietreact = model.reactions.get_by_id(reac_name)
-            new_dietreact.add_metabolites({model.metabolites.get_by_id(d_met_name): -1})
-
-        # Creating the [d] transport reactions to lumen
-        # E.g., DUt_4hbz: 4hbz[d] --> 4hbz[u]
-        # Ensure there are no duplicates if user runs function more than once
-        if dut_name not in existing_rxn_ids:
-            dut_formula = f"{d_met_name} --> {met_name}"
-            reaction = create_rxn(dut_name, dut_name + 'diet to lumen', ' ', TRANSPORT_LOWER_BOUND, TRANSPORT_UPPER_BOUND)
-            model.add_reactions([reaction])
-
-            # Adding the correct d --> u formula to the reaction
-            reaction.reaction = dut_formula
-            reaction.bounds = (0., 10000.)
-
-        # Creating the fe exchange reactions
-        # E.g., EX_4abut[fe]: 4abut[fe] <=>
-        # Ensure there are no duplicates if user runs function more than once
-        if fe_met_name not in existing_met_ids:
-            reac_name = "EX_" + fe_met_name
-            reaction = create_rxn(reac_name, fe_met_name + "fecal exchange", ' ', EXCHANGE_LOWER_BOUND, EXCHANGE_UPPER_BOUND)
-            model.add_reactions([reaction])
-            model.add_metabolites([Metabolite(fe_met_name, compartment="fe")])
-            new_fe_react = model.reactions.get_by_id(reac_name)
-            new_fe_react.add_metabolites({model.metabolites.get_by_id(fe_met_name): -1})
-
-        # Creating the [fe] transport reactions to lumen
-        # E.g., UFEt_arabinoxyl: arabinoxyl[u] --> arabinoxyl[fe]
-        # Ensure there are no duplicates if user runs function more than once
-        if ufet_name not in existing_rxn_ids:
-            ufet_formula = f"{met_name} --> {fe_met_name}"
-            reaction = create_rxn(ufet_name, ufet_name + "diet to lumen", ' ', TRANSPORT_LOWER_BOUND, TRANSPORT_UPPER_BOUND)
-            model.add_reactions([reaction])
-
-            # Adding the corrected d --> u formula to the reaction
-            reaction.reaction = ufet_formula
-            reaction.bounds = (0., TRANSPORT_UPPER_BOUND)
+        # EX_2omxyl[d]: 2omxyl[d] <=>
+        _add_exchange_reaction(base_name, existing_mets, model, EXCHANGE_BOUNDS, "d", "diet")
+        # DUt_4hbz: 4hbz[d] --> 4hbz[u]
+        _add_transport_reaction(f'DUt_{base_name}', existing_rxns, model, f'{base_name}[d]', lumen_met, TRANSPORT_BOUNDS, "diet to lumen")
+        # EX_4abut[fe]: 4abut[fe] <=>
+        _add_exchange_reaction(base_name, existing_mets, model, EXCHANGE_BOUNDS, "fe", "fecal")
+        # UFEt_arabinoxyl: arabinoxyl[u] --> arabinoxyl[fe]
+        _add_transport_reaction(f'UFEt_{base_name}', existing_rxns, model, lumen_met, f'{base_name}[fe]', TRANSPORT_BOUNDS, "lumen to fecal")
 
     return model
 
-def com_biomass(model, abun_path, sample_com):
+def _add_exchange_reaction(base_name, existing_met_ids, model, bounds, compartment, label):
+    met_id = f'{base_name}[{compartment}]'
+    if met_id not in existing_met_ids:
+        reac_id = "EX_" + met_id
+        reaction = create_rxn(reac_id, f"{met_id} {label} exchange", ' ', bounds)
+        model.add_reactions([reaction])
+        model.add_metabolites([Metabolite(met_id, compartment=compartment)])
+        reaction = model.reactions.get_by_id(reac_id)
+        reaction.add_metabolites({model.metabolites.get_by_id(met_id): -1})
+
+def _add_transport_reaction(rxn_id, existing_rxn_ids, model, reactant_id, product_id, bounds, label):
+    if rxn_id not in existing_rxn_ids:
+        reaction = create_rxn(rxn_id, f"{rxn_id} {label} transport", ' ', bounds)
+        model.add_reactions([reaction])
+        reaction.reaction = f"{reactant_id} --> {product_id}"
+        reaction.bounds = bounds
+
+def com_biomass(model: cobra.Model, abun_path: str, sample_com: str):
     """
-    Takes a combined community model and adds a community biomass formula to the model.
+    Create weighted community biomass reaction based on species abundances.
     
-    INPUTS:
-        model: a .mat file of an AGORA single cell model
-        abun_path: path to the species abundance .csv file
-        sample_com: the sample name string (internal to the com_py pipeline)
-  
-    OUTPUTS:
-        model: updated model with community biomass equation
+    Biological Equation: Community_Biomass = Σ(abundance_i × species_biomass_i)
+    
+    This represents the total microbial biomass production weighted by each
+    species' relative abundance in the sample, creating a community-level
+    growth objective that reflects the natural composition.
+    
+    Args:
+        model: Community model with individual species biomass reactions
+        abundance_path: Path to species abundance CSV file
+        sample_name: Column name in abundance file for this sample
+        
+    Returns:
+        Model with community biomass reaction and transport to fecal compartment
     """
 
     # Deleting all previous community biomass equations
     biomass_reactions = [r for r in model.reactions if "Biomass" in r.id]
     model.remove_reactions(biomass_reactions)
 
-    # Extracting biomass metabolites from the different single cell models
-    biomass_mets_list = []
-    for mets in model.metabolites:
-        if "biomass" in mets.id:
-            biomass_mets_list.append(mets.id)
-
-    # Sort species alphabetically
-    biomass_mets_list = sorted(biomass_mets_list)
-
-    # Reading in the abundance file, sort species alphabetically,
-    # and remove species with abundances < 1e-7
-    norm_abund = pd.read_csv(abun_path)
-    norm_abund = norm_abund[norm_abund[sample_com] > ABUNDANCE_THRESHOLD]
+    # Load abundance data and filter by threshold
+    abun_df = pd.read_csv(abun_path)
+    abun_df = abun_df[abun_df[sample_com] > ABUNDANCE_THRESHOLD]
 
     # Creating the community biomass reaction
-    reaction = create_rxn("communityBiomass", "communityBiomass", ' ', 0., 10000.)
-    # reaction.add_metabolites(com_biomass_dic)
+    reaction = create_rxn("communityBiomass", "communityBiomass", ' ', (0., 10000.))
     model.add_reactions([reaction])
     community_biomass = model.reactions.communityBiomass
 
-    # Initialize biomass contribution dictionary
-    com_biomass_dict = {}
-
-    # Build biomass ID from species name
-    for _, row in norm_abund.iterrows():
-        species = row["X"]
-        abundance = row[sample_com]
-        biomass_id = f"{species}_biomass[c]"
-        if biomass_id in model.metabolites:
-            com_biomass_dict[biomass_id] = -float(abundance)
-        else:
-            print(f"⚠️ Biomass metabolite missing in model: {biomass_id}")
+    # Build abundance-weighted biomass stoichiometry
+    biomass_stoichiometry = {}
     
-    community_biomass.add_metabolites(metabolites_to_add=com_biomass_dict, combine=True)
+    for _, row in abun_df.iterrows():
+        species_name = row["X"]
+        abundance = float(row[sample_com])
+        biomass_met_id = f"{species_name}_biomass[c]"
+        if biomass_met_id in model.metabolites:
+            biomass_stoichiometry[biomass_met_id] = -abundance
+        else:
+            print(f"⚠️ Biomass metabolite missing in model: {biomass_met_id}")
+    
+    community_biomass.add_metabolites(metabolites_to_add=biomass_stoichiometry, combine=True)
 
     # Adding the microbeBiomass metabolite
     model.add_metabolites([Metabolite("microbeBiomass[u]", formula=" ", \
@@ -199,7 +191,7 @@ def com_biomass(model, abun_path, sample_com):
 
     # Adding the exchange reaction compartment
     reac_name = "EX_microbeBiomass[fe]"
-    reaction = create_rxn(reac_name, reac_name, ' ', -10000., EXCHANGE_UPPER_BOUND)
+    reaction = create_rxn(reac_name, reac_name, ' ', (-10000., 10000.))
     model.add_reactions([reaction])
 
     # Adding a microbeBiomass [fe] metabolite
@@ -212,26 +204,22 @@ def com_biomass(model, abun_path, sample_com):
 
     # Adding the UFEt reaction
     ufet_formula = "microbeBiomass[u] --> microbeBiomass[fe]"
-    reaction = create_rxn("UFEt_microbeBiomass", "UFEt_microbeBiomass", ' ', TRANSPORT_LOWER_BOUND, TRANSPORT_UPPER_BOUND)
+    reaction = create_rxn("UFEt_microbeBiomass", "UFEt_microbeBiomass", ' ', TRANSPORT_BOUNDS)
     model.add_reactions([reaction])
-
-    # Adding the correct d --> u formula to the reaction
-    reaction.reaction = ufet_formula
-    reaction.bounds = (0., TRANSPORT_UPPER_BOUND)
+    reaction.reaction = "microbeBiomass[u] --> microbeBiomass[fe]"
+    reaction.bounds = TRANSPORT_BOUNDS
 
     return model
 
-def tag_metabolite(model, metabolite_name, species_name, compartment: str):
+def tag_metabolite(met: cobra.Metabolite, species_name: str, compartment: str):
     '''
     Helper function for species_to_community for tagging metabolites
     '''
-    model.metabolites.get_by_id(metabolite_name).compartment = compartment
-    no_c_name = metabolite_name.replace(f"[{compartment}]", "")
-    updated_m_name = species_name + "_" + no_c_name + f"[{compartment}]"
-    model.metabolites.get_by_id(metabolite_name).id = updated_m_name
-    model.metabolites.get_by_id(updated_m_name).compartment = compartment
+    met.compartment = compartment
+    no_c_name = met.id.replace(f"[{compartment}]", "")
+    met.id = f'{species_name}_{no_c_name}[{compartment}]'
 
-def species_to_community(model, species_model_name):
+def species_to_community(model: cobra.Model, species_model_name: str):
     """
     Takes a single cell AGORA GEM and changes its reaction and metabolite formatting so it 
     can be added to a community model in the Com_py pipeline.
@@ -259,109 +247,101 @@ def species_to_community(model, species_model_name):
     # Extracting the species name from the species model name
     short_species_name = os.path.splitext(os.path.basename(species_model_name))[0]
 
-    for rxn in model.reactions:
-        # Removing all exchange reactions except for the biomass reaction
-        if "EX_" in rxn.id and "biomass" not in rxn.id:
-            model.remove_reactions(model.reactions.get_by_id(rxn.id))
+    # Step 1: Remove all exchange reactions except for the biomass reaction
+    ex_rxns = [rxn for rxn in model.reactions if "EX_" in rxn.id and "biomass" not in rxn.id]
+    model.remove_reactions(ex_rxns)
 
+    # Step 2: Tag metabolites in intra- and extracellular compartments of model
+    for rxn in model.reactions:
         # Change the intracellualr reaction from [c] --> [c]
-        elif "[e]" not in rxn.reaction and "[c]" in rxn.reaction:
-                reaction_bounds = rxn.bounds
-                reaction_name = rxn.id
-                updated_r_name =  short_species_name + "_" + reaction_name
-                model.reactions.get_by_id(reaction_name).id = updated_r_name
-
-                # For each metabolite in that reaction, if that met already has the
-                # name tag skip it, if not add it
-                for met in rxn.metabolites:
-                    if short_species_name not in str(met.id):
-                        if "[c]" in str(met.id):
-                            tag_metabolite(model, met.id, short_species_name, 'c')
-                        if "[p]" in str(met.id):
-                            tag_metabolite(model, met.id, short_species_name, 'p')
-
-                # Get the reversiblity to carry over into the new models
-                model.reactions.get_by_id(updated_r_name).bounds = reaction_bounds
-
-        # Working on the extracellular reactions from [c] --> [e]
-        elif "[e]" in rxn.reaction:
-            reaction_name = rxn.id
-            updated_r_name =  short_species_name + "_" + reaction_name
-            model.reactions.get_by_id(reaction_name).id = updated_r_name
-
-            # For each metabolite in that reaction, if it is the cellular metabolite, tag it;
-            # if it is the extracellular metabolite, tag it
+        if "[e]" in rxn.reaction or "[c]" in rxn.reaction:
+            rxn.id = f'{short_species_name}_{rxn.id}'
+            # tag each metabolite in rxn, if not already tagged
             for met in rxn.metabolites:
-                if "[c]" in met.id:
-                    if short_species_name not in str(met.id):
-                        tag_metabolite(model, met.id, short_species_name, 'c')
-                elif "[e]" in met.id:
-                    if short_species_name not in str(met.id):
-                        metabolite_name = met.id
-                        model.metabolites.get_by_id(metabolite_name).compartment = "u"
-                        no_c_name = metabolite_name.replace("[e]", "")
-                        updated_m_name = short_species_name + "_" + no_c_name + "[u]"
-                        model.metabolites.get_by_id(metabolite_name).id = updated_m_name
-                        model.metabolites.get_by_id(updated_m_name).compartment = "u"
-                elif "[p]" in met.id:
-                    if short_species_name not in str(met.id):
-                        tag_metabolite(model, met.id, short_species_name, 'p')
+                if ("[c]" in met.id or "[p]" in met.id) and short_species_name not in met.id:
+                    compartment = 'c' if '[c]' in met.id else 'p'
+                    tag_metabolite(met, short_species_name, compartment)
+                elif "[e]" in met.id and short_species_name not in met.id:
+                    met.compartment = "u"
+                    no_c_name = met.id.replace("[e]", "")
+                    met.id = f'{short_species_name}_{no_c_name}[u]'
 
-    # Adding the tagged intracellular reactions for the extracellular metabolites to the model
-    # For all extracellular species specific metabolites, add an exchange reaction
-    for met in model.metabolites:
-        if "[u]" in met.id:
-            if short_species_name in met.id:
-                replacing_specname = short_species_name + "_"
-                general_name = met.id.replace(replacing_specname, "")
-                iex_formula = f"{general_name} <=> {met.id}"
-                iex_reaction_name = short_species_name + "_IEX_" + general_name + "tr"
+    # Step 3: Create inter-species metabolite exchange
+    model = _create_inter_species_exchange(model, short_species_name)
 
-                if general_name not in [m.id for m in model.metabolites]:
-                    model.add_metabolites([
-                        Metabolite(general_name, compartment="u", name=general_name.split("[")[0])
-                    ])
-
-                reaction = create_rxn(iex_reaction_name, short_species_name + "_IEX", ' ', -1000., 1000.)
-                model.add_reactions([reaction])
-                reaction.reaction = iex_formula
-                reaction.bounds = (-1000., 1000.)
-
-    # Ensure each reaction has the species tag on it
-    for rxn in model.reactions:
-        if short_species_name not in rxn.id:
-            reaction_name = rxn.id
-            updated_r_name =  short_species_name + "_" + reaction_name
-            model.reactions.get_by_id(reaction_name).id = updated_r_name
-
-    # Ensure each [c] and [p] compartment metabolite has the species tag on it
-    for met in model.metabolites:
-        if "[c]" in met.id:
-            if short_species_name not in met.id:
-                tag_metabolite(model, met.id, short_species_name, 'c')
-        elif "[p]" in met.id:
-            if short_species_name not in met.id:
-                tag_metabolite(model, met.id, short_species_name, 'p')
-
-    # Woring on individual biomass reactions
-    # Each species will have a [c] --> [c] reaction that will then be added to
-    # the community biomass
-    for rxn in model.reactions:
-        if short_species_name not in rxn.id:
-            reaction_name = rxn.id
-            model.reactions.get_by_id(reaction_name).id = updated_r_name
+    # Step 4: Ensure all components are properly tagged
+    model = _finalize_species_tagging(model, short_species_name)
 
     return model
 
-def prune_zero_abundance(model, zero_abundance_species):
+def _create_inter_species_exchange(model: cobra.Model, species_name: str) -> cobra.Model:
+    """
+    Create IEX reactions for species-specific ↔ general metabolite exchange.
+    
+    Biological Rationale: Allows species to contribute/consume shared metabolites
+    in community lumen while maintaining species-specific uptake kinetics.
+    """
+    species_lumen_metabolites = [
+        met for met in model.metabolites 
+        if "[u]" in met.id and species_name in met.id
+    ]
+    
+    for species_met in species_lumen_metabolites:
+        general_met_id = species_met.id.replace(f"{species_name}_", "")
+        
+        # Create general metabolite if it doesn't exist
+        if general_met_id not in [m.id for m in model.metabolites]:
+            general_met = Metabolite(
+                general_met_id, 
+                compartment="u", 
+                name=general_met_id.split("[")[0]
+            )
+            model.add_metabolites([general_met])
+        
+        # Create IEX reaction: general_met <=> species_met
+        iex_rxn_id = f"{species_name}_IEX_{general_met_id}tr"
+        iex_rxn = create_rxn(iex_rxn_id, f"{species_name}_IEX", " ", (-1000.0, 1000.0))
+        model.add_reactions([iex_rxn])
+        iex_rxn.reaction = f"{general_met_id} <=> {species_met.id}"
+        iex_rxn.bounds = (-1000.0, 1000.0)
+    
+    return model
+
+def _finalize_species_tagging(model: cobra.Model, species_name: str) -> cobra.Model:
+    """Ensure all reactions and metabolites are properly tagged with species name."""
+    # Tag any remaining untagged reactions
+    for rxn in model.reactions:
+        if not rxn.id.startswith(species_name):
+            rxn.id = f"{species_name}_{rxn.id}"
+    
+    # Tag any remaining untagged [c] and [p] metabolites
+    for met in model.metabolites:
+        if ("[c]" in met.id or "[p]" in met.id) and species_name not in met.id:
+            compartment = 'c' if '[c]' in met.id else 'p'
+            tag_metabolite(met, species_name, compartment)
+    
+    return model
+
+def prune_zero_abundance_species(model: cobra.Model, zero_abundance_species: list[str]) -> cobra.Model:
+    """
+    Remove all reactions and metabolites from species below abundance threshold.
+    Biological Rationale: Species below detection limit (typically 0.01% relative
+    abundance) don't contribute meaningful metabolic flux to community phenotype.
+
+    Args:
+        model: Community model containing all species
+        zero_abundance_species: Species names below abundance threshold
+        
+    Returns:
+        Pruned model containing only detected species
+    """
     print('Pruning metabolites and Reactions from Zero-Abundance Species in Sample')
     zero_prefixes = {f"{species}_" for species in zero_abundance_species}
     metabolites_to_remove = [
         met for met in model.metabolites 
         if any(met.id.startswith(prefix) for prefix in zero_prefixes)
     ]
-    # Setting destructive to True also removes all associated reactions,
-    # so no need to loop over reactions to remove (will prune 0)
+    # Destructive removal also removes associated reactions automatically
     model.remove_metabolites(metabolites_to_remove, destructive=True)
     print(f"Pruned {len(metabolites_to_remove)} Metabolites")
     return model
@@ -380,10 +360,10 @@ def build_global_model(abundance_df: pd.DataFrame, mod_dir: str) -> cobra.Model:
         global_model: a unified COBRApy model containing all species.
     """
 
-    print_out("Building global community model", padding_str='*')
+    print("Building global community model".center(40, '*'))
     all_species = abundance_df.index.tolist()
     first_path = os.path.join(mod_dir, all_species[0] + ".mat")
-    print_out("Added model: " + all_species[0], padding_str="*")
+    print(f"Added first species model: {all_species[0]}".center(40, '*'))
     first_model = cobra.io.load_matlab_model(first_path)
     global_model = species_to_community(first_model, species_model_name=first_path)
 
@@ -396,13 +376,12 @@ def build_global_model(abundance_df: pd.DataFrame, mod_dir: str) -> cobra.Model:
         existing_rxns = {r.id for r in global_model.reactions}
         new_rxns = [r for r in tagged_model.reactions if r.id not in existing_rxns]
         global_model.add_reactions(new_rxns)
-        print_out("Added model: " + species.split("/")[-1], padding_str="*")
 
-    print_out("Finished adding GEM reconstructions to community")
+    print("Finished adding GEM reconstructions to community".center(40, '*'))
 
-    print_out("Adding diet and fecal compartments")
-    clean_model = clean_community(model=global_model)
-    print_out("Done adding diet and fecal compartments")
+    print("Adding diet and fecal compartments".center(40, '*'))
+    clean_model = add_diet_fecal_compartments(model=global_model)
+    print("Done adding diet and fecal compartments".center(40, '*'))
 
     global_C, global_d, global_dsense, global_ctrs = build_global_coupling_constraints(clean_model, all_species)
 
@@ -437,10 +416,10 @@ def build_sample_model(sample_name: str, global_model: cobra.Model, abundance_df
     zero_species = [sp for sp in sample_abun.index if sample_abun[sp] < 1e-7]
     present_species = [sp for sp in sample_abun.index if sample_abun[sp] >= 1e-7]
 
-    model = prune_zero_abundance(model, zero_abundance_species=zero_species)
+    model = prune_zero_abundance_species(model, zero_abundance_species=zero_species)
 
     # Add a community biomass reaction to the model
-    print_out("Adding community biomass reaction")
+    print("Adding community biomass reaction".center(40, '*'))
     model = com_biomass(model=model, abun_path=abun_path, sample_com=sample_name)
 
     # Prune coupling constraints from the global model (C, dsense, d, ctrs)
@@ -466,10 +445,23 @@ def build_sample_model(sample_name: str, global_model: cobra.Model, abundance_df
 
     return save_path
 
-def build_global_coupling_constraints(model, species_list, coupling_factor=400):
+def build_global_coupling_constraints(model: cobra.Model, species_list: list[str], coupling_factor: float=400):
     """
-    Build coupling constraints equivalent to MATLAB's coupleRxnList2Rxn
-    Creates constraints: v_i - coupling_factor * v_biomass <= 0
+    Build sparse coupling constraint matrix for species biomass relationships.
+    
+    Biological Constraint: v_reaction ≤ coupling_factor × v_biomass
+    
+    Rationale: Individual reaction rates cannot exceed species biomass production
+    by more than the coupling factor. Prevents unrealistic flux distributions
+    where species have high metabolic activity but low biomass.
+    
+    Args:
+        model: Community model with all species reactions
+        species_list: List of species identifiers  
+        coupling_factor: Biomass coupling strength (default from config)
+        
+    Returns:
+        Coupling matrix (C), bounds (d), constraint sense (dsense), names (ctrs)
     """
     rxn_id_to_index = {r.id: i for i, r in enumerate(model.reactions)}
 
@@ -487,7 +479,7 @@ def build_global_coupling_constraints(model, species_list, coupling_factor=400):
             continue
 
         biomass_rxn = biomass_rxns[0]
-        biomass_idx = rxn_id_to_index[biomass_rxn.id]
+        biomass_idx = rxn_id_to_index[biomass_rxns[0].id]
 
         for rxn in species_rxns:
             if rxn.id == biomass_rxn.id:
@@ -535,15 +527,6 @@ def prune_coupling_constraints_by_species(global_model, global_C, global_d, glob
     Prune coupling constraints to only include those for species present in the sample.
     This mimics MATLAB's approach of removing coupling matrices for zero-abundance species.
     """
-    
-    # Find which constraint rows to keep
-    # keep_rows = []
-    # for i, ctr_name in enumerate(tqdm(global_ctrs)):
-    #     # Extract species name from constraint name (e.g., "slack_Bacteroides_sp_2_1_33B_IEX_12ppd_S[u]tr")
-    #     species_name = ctr_name.split("slack_")[1]
-    #     matched_name = next((name for name in present_species if species_name.startswith(name)), None)
-    #     if matched_name:
-    #         keep_rows.append(i)
 
     present_species_set = set(present_species)
     slack_prefix = "slack_"
@@ -660,8 +643,6 @@ def make_mg_pipe_model_dict(model, C=None, d=None, dsense=None, ctrs=None):
         'name': model_name
     }
 
-
-
 def compy(abun_filepath, mod_filepath, out_filepath, diet_filepath=None, workers=1):
     """
     Inspired by MICOM community building and mgpipe.m code.
@@ -683,16 +664,12 @@ def compy(abun_filepath, mod_filepath, out_filepath, diet_filepath=None, workers
         All sample community models to a specified local folder
     """
 
-    print_out("Starting ComPy pipeline")
-    print_out("Reading abundance file")
+    print("Starting ComPy pipeline".center(40, '*'))
+    print("Reading abundance file".center(40, '*'))
 
     sample_info = pd.read_csv(abun_filepath)
     sample_info.rename(columns={list(sample_info)[0]:"species"}, inplace=True)
     sample_info.set_index("species", inplace=True)
-
-    # # Setting solver and model configurations
-    # solver = [s for s in ["cplex", "gurobi", "osqp", "glpk"] \
-    #           if s in cobra.util.solver.solvers][0]
 
     global_model, global_C, global_d, global_dsense, global_ctrs = build_global_model(sample_info, mod_filepath)
     samples = sample_info.columns.tolist()
