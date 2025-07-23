@@ -203,7 +203,6 @@ def com_biomass(model: cobra.Model, abun_path: str, sample_com: str):
     new_fe_react.add_metabolites({model.metabolites.get_by_id("microbeBiomass[fe]"): -1})
 
     # Adding the UFEt reaction
-    ufet_formula = "microbeBiomass[u] --> microbeBiomass[fe]"
     reaction = create_rxn("UFEt_microbeBiomass", "UFEt_microbeBiomass", ' ', TRANSPORT_BOUNDS)
     model.add_reactions([reaction])
     reaction.reaction = "microbeBiomass[u] --> microbeBiomass[fe]"

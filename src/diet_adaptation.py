@@ -400,7 +400,6 @@ def _analyze_metabolite_fluxes(model: cobra.Model, exchanges: list, sample_name:
     print(f"  Completed FVA analysis for {sample_name}")
     return net_production_samp, net_uptake_samp
 
-
 def simulate_microbiota_models(
     sample_names: list, ex_mets: list, model_dir: str, diet_file: str, res_path: str,
     biomass_bounds: tuple=(0.4, 1.0), solver: str = 'cplex', workers: int = 1) -> tuple:

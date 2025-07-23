@@ -2,5 +2,7 @@ cobra==0.29.1
 numpy==1.26.4
 pandas==2.2.3
 docplex==2.29.245
-scipy
+cplex
+optlang
 tqdm
+scipy

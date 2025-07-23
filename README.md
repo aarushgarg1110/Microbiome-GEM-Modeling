@@ -38,3 +38,20 @@ This repository is used to host scripts and notes for our project on computation
 * __Pending Implementations__
 * Automatic incorporation of metabolites and reactions needed for AGORA 2.01 model growth (emulating adaptVMHDietToAGORA() by [Heinken et al. (2022)](https://pubmed.ncbi.nlm.nih.gov/35157025/)) 
 * Parallelized model construction
+
+
+## Docker notes (will revise readme too later)
+```bash
+cd Microbiome-GEM-Modeling
+docker build -t cobra .
+docker run -it --rm -v "${PWD}:/app" cobra bash
+./cplex/cplex_studio2212.linux_x86_64.bin
+Accept all license agreements and run executable
+tar -czvf cplex.tar.gz cplex/ibm
+exit container
+tar -xzvf cplex.tar.gz
+
+one time set up above
+docker run -it --rm -v "${PWD}:/app" cobra bash
+docplex config --upgrade /cplex/ibm/ILOG/CPLEX_Studio2212
+
