@@ -33,7 +33,7 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 from tqdm import tqdm
 
 # Local imports
-from compy import make_mg_pipe_model_dict
+from src.migemox import make_mg_pipe_model_dict
 
 # adapt_vmh_diet_to_agora: Essential AGORA metabolites
 ESSENTIAL_METS = [

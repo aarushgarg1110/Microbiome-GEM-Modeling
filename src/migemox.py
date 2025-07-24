@@ -1,5 +1,5 @@
 """
-Microbiome Community Model Builder (ComPy)
+Microbiome Genome-Scale Modeling Toolbox (MiGEMox)
 
 Optimized Python implementation of mgPipe community modeling pipeline.
 Transforms individual AGORA species reconstructions into integrated community models
@@ -193,12 +193,8 @@ def com_biomass(model: cobra.Model, abun_path: str, sample_com: str):
     reac_name = "EX_microbeBiomass[fe]"
     reaction = create_rxn(reac_name, reac_name, ' ', (-10000., 10000.))
     model.add_reactions([reaction])
-
-    # Adding a microbeBiomass [fe] metabolite
     model.add_metabolites([Metabolite("microbeBiomass[fe]", formula=" ", \
                                       name="product of community biomass", compartment="fe"),])
-
-    # Adding the exchange reaction
     new_fe_react = model.reactions.get_by_id("EX_microbeBiomass[fe]")
     new_fe_react.add_metabolites({model.metabolites.get_by_id("microbeBiomass[fe]"): -1})
 
@@ -642,7 +638,7 @@ def make_mg_pipe_model_dict(model, C=None, d=None, dsense=None, ctrs=None):
         'name': model_name
     }
 
-def compy(abun_filepath, mod_filepath, out_filepath, diet_filepath=None, workers=1):
+def migemox(abun_filepath, mod_filepath, out_filepath, diet_filepath=None, workers=1):
     """
     Inspired by MICOM community building and mgpipe.m code.
     Main pipeline which inputs the GEMs data and accesses the different functions.
@@ -655,7 +651,7 @@ def compy(abun_filepath, mod_filepath, out_filepath, diet_filepath=None, workers
         modpath: path to folder with all AGORA models 
             E.g. "~/data_input/AGORA201/'"
         respath: path where the community models will be output (defaults to same folder as )
-            E.g. "~/compy_results/"
+            E.g. "~/results/"
         dietpath: path to the AGORA compatible diet (for community model) .csv file
             E.g. "~/data_input/AverageEU_diet_fluxes.csv"
   
@@ -663,7 +659,7 @@ def compy(abun_filepath, mod_filepath, out_filepath, diet_filepath=None, workers
         All sample community models to a specified local folder
     """
 
-    print("Starting ComPy pipeline".center(40, '*'))
+    print("Starting MiGeMox pipeline".center(40, '*'))
     print("Reading abundance file".center(40, '*'))
 
     sample_info = pd.read_csv(abun_filepath)
