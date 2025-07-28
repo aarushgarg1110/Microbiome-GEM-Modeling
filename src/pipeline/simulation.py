@@ -177,6 +177,8 @@ def _analyze_metabolite_fluxes(model: cobra.Model, exchanges: list, sample_name:
     # Calculate net production and uptake
     net_production_samp = {}
     net_uptake_samp = {}
+    min_net_fecal_excretion = {}
+    raw_fva_results = {}
 
     # exchanges derived from exMets (all exchanged metabolites across all individual models) -> intersect it with rxns in this particular model
     fecal_rxns = [r.id for r in model.exchanges]
@@ -192,11 +194,20 @@ def _analyze_metabolite_fluxes(model: cobra.Model, exchanges: list, sample_name:
 
         prod = abs(min_flux_diet.get(diet_var, 0) + max_flux_fecal.get(fecal_var, 0))
         uptk = abs(max_flux_diet.get(diet_var, 0) + min_flux_fecal.get(fecal_var, 0))
+        min_net_fe_ex = min_flux_fecal.get(fecal_var, 0) + min_flux_diet.get(diet_var, 0)
+    
         net_production_samp[rxn] = prod
         net_uptake_samp[rxn] = uptk
+        min_net_fecal_excretion[rxn] = min_net_fe_ex
+        raw_fva_results[rxn] = {
+            'min_flux_diet': min_flux_diet.get(diet_var, 0),
+            'max_flux_diet': max_flux_diet.get(diet_var, 0),
+            'min_flux_fecal': min_flux_fecal.get(fecal_var, 0),
+            'max_flux_fecal': max_flux_fecal.get(fecal_var, 0)
+        }
     
     print(f"  Completed FVA analysis for {sample_name}")
-    return net_production_samp, net_uptake_samp
+    return net_production_samp, net_uptake_samp, min_net_fecal_excretion, raw_fva_results
 
 def simulate_microbiota_models(
     sample_names: list, ex_mets: list, model_dir: str, diet_file: str, res_path: str,
@@ -226,6 +237,8 @@ def simulate_microbiota_models(
 
     net_production = {}
     net_uptake = {}
+    min_net_fecal_excretion = {}
+    raw_fva_results = {}
 
     # Adapt diet
     diet_constraints = adapt_vmh_diet_to_agora(diet_file, setup_type='Microbiota')
@@ -247,9 +260,11 @@ def simulate_microbiota_models(
         # Collect results as they complete
         for future in tqdm(as_completed(futures), total=len(futures), desc='Processing samples'):
             try:
-                sample_name, net_production_samp, net_uptake_samp = future.result()
+                sample_name, net_production_samp, net_uptake_samp, min_net_fe_ex, raw_fva = future.result()
                 net_production[sample_name] = net_production_samp
                 net_uptake[sample_name] = net_uptake_samp
+                min_net_fecal_excretion[sample_name] = min_net_fe_ex
+                raw_fva_results[sample_name] = raw_fva
                 
             except Exception as e:
                 print(f"Sample {sample_name} failed with error: {e}")
@@ -257,4 +272,4 @@ def simulate_microbiota_models(
                 continue
 
     print("All samples processed successfully")
-    return exchanges, net_production, net_uptake
+    return exchanges, net_production, net_uptake, min_net_fecal_excretion, raw_fva_results

@@ -10,17 +10,13 @@ various specialized modules.
 import pandas as pd
 import os
 import argparse
-from typing import Optional, List
-from concurrent.futures import ProcessPoolExecutor
-from tqdm import tqdm
-
+from pathlib import Path
 import docplex
 import cplex
 
 # Import functions from our new modules
 from src.pipeline.io_utils import get_individual_size_name
 from src.pipeline.model_builder import build_mgpipe_models
-from src.pipeline.diet_adapter import adapt_vmh_diet_to_agora
 from src.pipeline.simulation import simulate_microbiota_models
 from src.pipeline.analysis import collect_flux_profiles
 from src.downstream_analysis.predict_microbe_contribution import predict_microbe_contributions
@@ -59,7 +55,7 @@ def run_migemox_pipeline(abun_filepath: str, mod_filepath: str, res_filepath: st
     print("\n--- Stage 2: Adapting Diet and Running Simulations ---")
 
     # 3. Simulate Microbiota Models
-    exchanges, net_production, net_uptake = simulate_microbiota_models(
+    exchanges, net_production, net_uptake, min_net_fecal_excretion, raw_fva_results = simulate_microbiota_models(
         sample_names=clean_samp_names,
         ex_mets=ex_mets,
         model_dir=f'{res_filepath}/Personalized_Models',
@@ -79,7 +75,12 @@ def run_migemox_pipeline(abun_filepath: str, mod_filepath: str, res_filepath: st
         net_uptake=net_uptake,
         res_path=res_filepath
     )
-
+    pd.DataFrame(min_net_fecal_excretion).to_csv(Path(res_filepath) / 'inputDiet_min_net_fecal_excretion.csv')
+    # Save raw FVA results as a multi-index DataFrame
+    raw_fva_df = pd.concat({k: pd.DataFrame(v).T for k, v in raw_fva_results.items()}, axis=0)
+    raw_fva_df.index.names = ['Sample', 'Reaction']
+    raw_fva_df.to_csv(Path(res_filepath) / 'inputDiet_raw_fva_results.csv')
+    
     print(f"Net secretion and uptake results saved to {res_filepath}.")
 
     # 5. Run Strain Contribution Analysis (Optional)

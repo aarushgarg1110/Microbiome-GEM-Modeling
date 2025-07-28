@@ -1,7 +1,7 @@
 FROM python:3.10-slim
 
 # Set environment for CPLEX
-ENV CPLEX_HOME=/opt/ibm/cplex
+ENV CPLEX_HOME=/cplex/ibm/cplex
 ENV PATH="${CPLEX_HOME}/bin/x86-64_linux:$PATH"
 ENV LD_LIBRARY_PATH="${CPLEX_HOME}/lib/x86-64_linux:$LD_LIBRARY_PATH"
 
@@ -17,12 +17,8 @@ COPY cplex /opt/ibm/cplex
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Install CPLEX Python bindings (must match Python version)
-COPY cplex/python/3.10/x86-64_linux /tmp/cplex_py/
-RUN cd /tmp/cplex_py && python setup.py install && rm -rf /tmp/cplex_py
-
 # Copy your modeling script
-COPY script.py /app/script.py
+COPY src/pipeline/pipeline.py /app/pipeline.py
 WORKDIR /app
 
-CMD ["python", "script.py"]
+CMD docplex config --upgrade ./cplex/ibm/ILOG/CPLEX_Studio2212 && python pipeline.py
