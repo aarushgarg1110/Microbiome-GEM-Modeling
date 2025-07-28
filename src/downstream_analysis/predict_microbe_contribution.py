@@ -8,7 +8,7 @@ from cobra.io import load_matlab_model
 from cobra.flux_analysis.variability import flux_variability_analysis
 from typing import Optional, List, Tuple, Dict
 import logging
-from src.diet_adaptation import couple_constraints
+from src.diet_adaptation import apply_couple_constraints
 from glob import glob
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from tqdm import tqdm
@@ -39,7 +39,7 @@ def _perform_fva(model: object, model_path: str, rxns_in_model: List[str], solve
     """Perform flux variability analysis with fallbacks"""
     try:
         model.solver = solver
-        model = couple_constraints(model, model_path)
+        model = apply_couple_constraints(model, model_path)
         fva_result = flux_variability_analysis(
             model, reaction_list=rxns_in_model,
             fraction_of_optimum=0.9999, processes=4)

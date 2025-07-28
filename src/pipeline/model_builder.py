@@ -1,26 +1,20 @@
 """
-Microbiome Genome-Scale Modeling Toolbox (MiGEMox)
+Model Builder for MiGEMox Pipeline
 
-Optimized Python implementation of mgPipe community modeling pipeline.
-Transforms individual AGORA species reconstructions into integrated community models
-with diet and fecal compartments for host-microbiome interaction modeling.
+This module contains functions dedicated to the construction, modification,
+and preparation of microbiome community models. It handles the integration
+of individual species GEMs, the addition of host-microbiome compartments,
+the creation of community biomass reactions, and the pruning of models
+based on sample-specific abundances.
 """
 
-# Computational biology imports
 import cobra
 from cobra import Reaction, Metabolite
-from cobra.io import load_matlab_model
-
-# Numerical computing
-import numpy as np
-from scipy.sparse import csr_matrix, hstack
 from scipy.io import savemat
-
-# Data processing
 import pandas as pd
-
-# System utilities
 import os
+from src.pipeline.constraints import build_global_coupling_constraints, prune_coupling_constraints_by_species
+from src.pipeline.io_utils import make_mg_pipe_model_dict
 from concurrent.futures import ProcessPoolExecutor
 from tqdm import tqdm
 
@@ -32,9 +26,6 @@ TRANSPORT_BOUNDS = (0.0, 10000.0) # Unidirectional transport
 
 # Species inclusion threshold
 ABUNDANCE_THRESHOLD = 1e-7
-
-# Default Coupling Factor (Used in https://doi.org/10.4161/gmic.22370)
-COUPLING_FACTOR = 400
 
 def create_rxn(rxn_identifier: str, name: str, subsystem: str, bounds: tuple) -> cobra.Reaction:
     """
@@ -121,7 +112,10 @@ def add_diet_fecal_compartments(model: cobra.Model) -> cobra.Model:
 
     return model
 
-def _add_exchange_reaction(base_name, existing_met_ids, model, bounds, compartment, label):
+def _add_exchange_reaction(base_name: str, existing_met_ids: set, model: cobra.Model, bounds: tuple, compartment: str, label: str):
+    """
+    Helper function to add an exchange reaction and its associated metabolite to the model.
+    """
     met_id = f'{base_name}[{compartment}]'
     if met_id not in existing_met_ids:
         reac_id = "EX_" + met_id
@@ -131,14 +125,17 @@ def _add_exchange_reaction(base_name, existing_met_ids, model, bounds, compartme
         reaction = model.reactions.get_by_id(reac_id)
         reaction.add_metabolites({model.metabolites.get_by_id(met_id): -1})
 
-def _add_transport_reaction(rxn_id, existing_rxn_ids, model, reactant_id, product_id, bounds, label):
+def _add_transport_reaction(rxn_id: str, existing_rxn_ids: set, model: cobra.Model, reactant_id: str, product_id: str, bounds: tuple, label: str):
+    """
+    Helper function to add a transport reaction between two metabolites.
+    """
     if rxn_id not in existing_rxn_ids:
         reaction = create_rxn(rxn_id, f"{rxn_id} {label} transport", ' ', bounds)
         model.add_reactions([reaction])
         reaction.reaction = f"{reactant_id} --> {product_id}"
         reaction.bounds = bounds
 
-def com_biomass(model: cobra.Model, abun_path: str, sample_com: str):
+def com_biomass(model: cobra.Model, abun_path: str, sample_com: str) -> cobra.Model:
     """
     Create weighted community biomass reaction based on species abundances.
     
@@ -214,7 +211,7 @@ def tag_metabolite(met: cobra.Metabolite, species_name: str, compartment: str):
     no_c_name = met.id.replace(f"[{compartment}]", "")
     met.id = f'{species_name}_{no_c_name}[{compartment}]'
 
-def species_to_community(model: cobra.Model, species_model_name: str):
+def reformat_gem_for_community(model: cobra.Model, species_model_name: str):
     """
     Takes a single cell AGORA GEM and changes its reaction and metabolite formatting so it 
     can be added to a community model in the Com_py pipeline.
@@ -341,18 +338,20 @@ def prune_zero_abundance_species(model: cobra.Model, zero_abundance_species: lis
     print(f"Pruned {len(metabolites_to_remove)} Metabolites")
     return model
 
-def build_global_model(abundance_df: pd.DataFrame, mod_dir: str) -> cobra.Model:
+def build_global_model(abundance_df: pd.DataFrame, mod_dir: str) -> tuple:
     """
     Loads all species found in the abundance table and builds a unified, unpruned community model.
     Species are combined into a single COBRA model, tagged and merged. Cleans the community as well
-    by adding the diet and fecal compartments
+    by adding the diet and fecal compartments. This function also returns the organism models it
+    loaded for later steps.
 
     Parameters:
         abundance_df: species x samples abundance dataframe.
         mod_dir: path to folder containing AGORA .mat files.
 
     Returns:
-        global_model: a unified COBRApy model containing all species.
+        tuple: Contains the cleaned global_model, and its associated 
+        coupling matrices (C, d, dsense, ctrs).
     """
 
     print("Building global community model".center(40, '*'))
@@ -360,12 +359,12 @@ def build_global_model(abundance_df: pd.DataFrame, mod_dir: str) -> cobra.Model:
     first_path = os.path.join(mod_dir, all_species[0] + ".mat")
     print(f"Added first species model: {all_species[0]}".center(40, '*'))
     first_model = cobra.io.load_matlab_model(first_path)
-    global_model = species_to_community(first_model, species_model_name=first_path)
+    global_model = reformat_gem_for_community(first_model, species_model_name=first_path)
 
     for species in all_species[1:]:
         species_path = os.path.join(mod_dir, species + ".mat")
         model = cobra.io.load_matlab_model(species_path)
-        tagged_model = species_to_community(model, species_path)
+        tagged_model = reformat_gem_for_community(model, species_path)
 
         # Avoid duplicate reaction IDs
         existing_rxns = {r.id for r in global_model.reactions}
@@ -383,8 +382,8 @@ def build_global_model(abundance_df: pd.DataFrame, mod_dir: str) -> cobra.Model:
     return clean_model, global_C, global_d, global_dsense, global_ctrs
 
 def build_sample_model(sample_name: str, global_model: cobra.Model, abundance_df: pd.DataFrame, 
-                       abun_path: str, out_dir: str, diet_path: str = None,
-                       global_C=None, global_d=None, global_dsense=None, global_ctrs=None):
+                       abun_path: str, out_dir: str, global_C=None, global_d=None,
+                       global_dsense=None, global_ctrs=None) -> str:
     """
     Takes a deep copy of the global model and builds the sample-specific model:
         - prunes zero-abundance species
@@ -398,7 +397,6 @@ def build_sample_model(sample_name: str, global_model: cobra.Model, abundance_df
         abundance_df: pandas dataframe of abundances
         abun_path: path to abundance CSV (needed by com_biomass)
         out_dir: directory to save the output model
-        diet_path: path to the diet file (optional)
 
     Returns:
         Path to the saved model
@@ -426,7 +424,6 @@ def build_sample_model(sample_name: str, global_model: cobra.Model, abundance_df
     for reac in [r for r in model.reactions if "DUt" in r.id or "UFEt" in r.id]:
         reac.lower_bound = 0.
 
-    # Setting the new community biomass as the objective
     # Setting EX_microbeBiomass[fe] as objective to match MATLAB mgPipe
     model.objective = "EX_microbeBiomass[fe]"
 
@@ -440,205 +437,7 @@ def build_sample_model(sample_name: str, global_model: cobra.Model, abundance_df
 
     return save_path
 
-def build_global_coupling_constraints(model: cobra.Model, species_list: list[str], coupling_factor: float=400):
-    """
-    Build sparse coupling constraint matrix for species biomass relationships.
-    
-    Biological Constraint: v_reaction ≤ coupling_factor × v_biomass
-    
-    Rationale: Individual reaction rates cannot exceed species biomass production
-    by more than the coupling factor. Prevents unrealistic flux distributions
-    where species have high metabolic activity but low biomass.
-    
-    Args:
-        model: Community model with all species reactions
-        species_list: List of species identifiers  
-        coupling_factor: Biomass coupling strength (default from config)
-        
-    Returns:
-        Coupling matrix (C), bounds (d), constraint sense (dsense), names (ctrs)
-    """
-    rxn_id_to_index = {r.id: i for i, r in enumerate(model.reactions)}
-
-    all_constraints = []
-    all_d = []
-    all_dsense = []
-    all_ctrs = []
-
-    for species in species_list:
-        # Find species reactions and biomass reaction
-        species_rxns = [r for r in model.reactions if r.id.startswith(species + '_')]
-        biomass_rxns = [r for r in species_rxns if 'biomass' in r.id.lower()]
-
-        if not biomass_rxns:
-            continue
-
-        biomass_rxn = biomass_rxns[0]
-        biomass_idx = rxn_id_to_index[biomass_rxns[0].id]
-
-        for rxn in species_rxns:
-            if rxn.id == biomass_rxn.id:
-                continue  # Don't couple biomass to itself
-
-            rxn_idx = rxn_id_to_index[rxn.id]
-
-            # Create constraint: v_rxn - 400*v_biomass <= 0
-            constraint_row = np.zeros(len(model.reactions))
-            constraint_row[rxn_idx] = 1.0  # coefficient for v_rxn
-            constraint_row[biomass_idx] = -coupling_factor  # coefficient for v_biomass
-
-            all_constraints.append(constraint_row)
-            all_d.append(0.0)
-            all_dsense.append('L')  # <= constraint
-            all_ctrs.append(f"slack_{rxn.id}")
-
-            # Also add reverse constraint: v_rxn + 400*v_biomass >= 0 (for reversible reactions)
-            if rxn.lower_bound < 0:
-                constraint_row_rev = np.zeros(len(model.reactions))
-                constraint_row_rev[rxn_idx] = 1.0
-                constraint_row_rev[biomass_idx] = coupling_factor
-
-                all_constraints.append(constraint_row_rev)
-                all_d.append(0.0)
-                all_dsense.append('G')
-                all_ctrs.append(f"slack_{rxn.id}_R")
-
-    if all_constraints:
-        C = csr_matrix(np.vstack(all_constraints))
-        d = np.array(all_d).reshape(-1, 1)
-        dsense = np.array(all_dsense, dtype='<U1')
-        ctrs = np.array(all_ctrs, dtype=object)
-    else:
-        C = csr_matrix((0, len(model.reactions)))
-        d = np.zeros((0, 1))
-        dsense = np.array([], dtype='<U1')
-        ctrs = np.array([], dtype=object)
-
-    return C, d, dsense, ctrs
-
-def prune_coupling_constraints_by_species(global_model, global_C, global_d, global_dsense, global_ctrs, 
-                                        present_species, model):
-    """
-    Prune coupling constraints to only include those for species present in the sample.
-    This mimics MATLAB's approach of removing coupling matrices for zero-abundance species.
-    """
-
-    present_species_set = set(present_species)
-    slack_prefix = "slack_"
-    keep_rows = []
-
-    for i, ctr_name in enumerate(tqdm(global_ctrs)):
-        # Extract species name from constraint name (e.g., "slack_Bacteroides_sp_2_1_33B_IEX_12ppd_S[u]tr")
-        if ctr_name.startswith(slack_prefix):
-            species_part = ctr_name[len(slack_prefix):]
-            for species in present_species_set:
-                if species_part.startswith(species):
-                    keep_rows.append(i)
-                    break
-    
-    if keep_rows:
-          # Remap columns to match sample-specific model
-        sample_rxn_ids = [r.id for r in model.reactions]
-        global_rxn_ids = [r.id for r in global_model.reactions]
-
-        global_rxn_idx_map = {rid: i for i, rid in enumerate(global_rxn_ids)}
-
-        cols = []
-        for rid in sample_rxn_ids:
-            idx = global_rxn_idx_map.get(rid)
-            if idx is not None:
-                cols.append(global_C[keep_rows, idx])
-            else:
-                cols.append(csr_matrix((len(keep_rows), 1)))
-        pruned_C = hstack(cols)
-        
-        pruned_d = global_d[keep_rows, :]
-        pruned_dsense = global_dsense[keep_rows]
-        pruned_ctrs = global_ctrs[keep_rows]
-    else:
-        pruned_C = csr_matrix((0, len(model.reactions)))
-        pruned_d = np.zeros((0, 1))
-        pruned_dsense = np.array([], dtype='<U1')
-        pruned_ctrs = np.array([], dtype=object)
-    
-    return pruned_C, pruned_d, pruned_dsense, pruned_ctrs
-
-def make_mg_pipe_model_dict(model, C=None, d=None, dsense=None, ctrs=None):
-    """
-    Enhanced version that properly handles all MATLAB-compatible fields
-    """
-    num_rxns = len(model.reactions)
-    num_mets = len(model.metabolites)
-
-    # Objective vector
-    c = np.zeros((num_rxns, 1))
-    obj_rxn_id = str(model.objective.expression).split('*')[1].split('-')[0].strip()
-    for i, rxn in enumerate(model.reactions):
-        if rxn.id == obj_rxn_id:
-            c[i, 0] = 1.0
-            break
-
-    # S matrix
-    S = cobra.util.create_stoichiometric_matrix(model)
-
-    # Bounds
-    lb = np.array([rxn.lower_bound for rxn in model.reactions], dtype=np.float64).reshape(-1, 1)
-    ub = np.array([rxn.upper_bound for rxn in model.reactions], dtype=np.float64).reshape(-1, 1)
-
-    # Met and rxn info
-    rxns = np.array([[rxn.id] for rxn in model.reactions], dtype=object)
-    rxnNames = np.array([[rxn.name] for rxn in model.reactions], dtype=object)
-    metNames = np.array([[met.name] for met in model.metabolites], dtype=object)
-    mets = np.array([[met.id] for met in model.metabolites], dtype=object)
-
-    # Sense
-    csense = np.array(['E'] * num_mets, dtype='U1')
-
-    # Default coupling matrices
-    if C is None: C = csr_matrix((0, num_rxns))
-    if d is None: d = np.zeros((0, 1))
-    if dsense is None: dsense = np.array([], dtype='<U1')
-    if ctrs is None: ctrs = np.array([], dtype=object).reshape(-1, 1)
-
-    C = csr_matrix((0, num_rxns)) if C is None else C
-    d = np.zeros((0, 1)) if d is None else d
-    dsense = np.array([], dtype='<U1') if dsense is None else dsense
-    ctrs = np.array([], dtype=object).reshape(-1, 1) if ctrs is None else ctrs.reshape(-1, 1)
-
-    # Model name
-    model_name = np.array([model.name], dtype=object)
-    osenseStr = np.array(['max'], dtype='U3')
-
-    return {
-        'rxns': rxns,
-        'rxnNames': rxnNames,
-        'mets': mets,
-        'metNames': metNames,
-        'S': S,
-        'b': np.zeros((num_mets, 1)),
-        'c': c,
-        'lb': lb,
-        'ub': ub,
-        'metChEBIID': np.array([
-            m.annotation['chebi'][0].replace('CHEBI:', '') if 'chebi' in m.annotation and isinstance(m.annotation['chebi'], list)
-            else m.annotation['chebi'].replace('CHEBI:', '') if 'chebi' in m.annotation and isinstance(m.annotation['chebi'], str)
-            else ''
-            for m in model.metabolites
-        ], dtype=object).reshape(-1, 1),
-        'metCharges': np.array([m.charge if getattr(m, 'charge', None) is not None else np.nan for m in model.metabolites]).reshape(-1, 1),
-        'metFormulas': np.array([m.formula if getattr(m, 'formula', None) is not None else np.nan for m in model.metabolites]).reshape(-1, 1),
-        'rules': np.array([getattr(r, 'gene_reaction_rule', '') for r in model.reactions], dtype=object).reshape(-1, 1),
-        'subSystems': np.array([getattr(r, 'subsystem', '') for r in model.reactions], dtype=object).reshape(-1, 1),
-        'osenseStr': osenseStr,
-        'csense': csense,
-        'C': C,
-        'd': d,
-        'dsense': dsense,
-        'ctrs': ctrs,
-        'name': model_name
-    }
-
-def migemox(abun_filepath, mod_filepath, out_filepath, diet_filepath=None, workers=1):
+def build_mgpipe_models(abun_filepath: str, mod_filepath: str, out_filepath: str, workers=1) -> tuple:
     """
     Inspired by MICOM community building and mgpipe.m code.
     Main pipeline which inputs the GEMs data and accesses the different functions.
@@ -671,7 +470,7 @@ def migemox(abun_filepath, mod_filepath, out_filepath, diet_filepath=None, worke
 
     with ProcessPoolExecutor(max_workers=workers) as executor:
         futures = [executor.submit(build_sample_model, s, global_model, sample_info, abun_filepath, out_filepath, 
-                                   diet_filepath, global_C, global_d, global_dsense, global_ctrs)
+                                   global_C, global_d, global_dsense, global_ctrs)
                    for s in samples]
         for f in tqdm(futures, desc='Building sample models'):
             f.result()

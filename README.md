@@ -53,5 +53,5 @@ tar -xzvf cplex.tar.gz
 
 one time set up above
 docker run -it --rm -v "${PWD}:/app" cobra bash
-docplex config --upgrade /cplex/ibm/ILOG/CPLEX_Studio2212
+docplex config --upgrade ./cplex_stuff/ibm/ILOG/CPLEX_Studio2212
 
