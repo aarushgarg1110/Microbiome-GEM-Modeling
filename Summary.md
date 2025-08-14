@@ -36,7 +36,7 @@ In this section, we provide a comprehensive overview of the workflow and impleme
 
 This stage, orchestrated by `pipeline.py` calling functions from `model_builder.py`, constructs a unique community model for each sample by integrating individual organism models according to their abundance. For the remainder of this document, we use "organism" as a stand-in for any taxonomic level. One can substitute "organism" with the appropriate taxonomic category relevant to their work, such as strain or genus.
 
-#### # Step 1.1: From Single Species to Community Member (`reformat_gem_for_community()`)
+#### Step 1.1: From Single Species to Community Member (`reformat_gem_for_community()`)
 
 The process begins with individual GEMs for all organisms present in the abundance input file, and provided in the AGORA database. The `reformat_gem_for_community()` function, called within `build_global_model()`, reformats each organism GEM by changing reaction and metabolites formatting as outlined below to allow its integration into a larger community structure.
 
@@ -48,7 +48,7 @@ The process begins with individual GEMs for all organisms present in the abundan
 
 At this stage, we now have a global community model consisting of all AGORA-native organisms found in the abundance input file.
 
-#### # Step 1.2: Incorporating New Compartments Representing the Host-Microbiome Interface within the Global Community Model (`add_diet_fecal_compartments()`)
+#### Step 1.2: Incorporating New Compartments Representing the Host-Microbiome Interface within the Global Community Model (`add_diet_fecal_compartments()`)
 
 After all organism GEMs are assembled into a first-draft global community model, `add_diet_fecal_compartments()` (called by `build_global_model()`) processes the draft model further to add compartments representing the interface with the host.
 
@@ -60,7 +60,7 @@ After all organism GEMs are assembled into a first-draft global community model,
     3.  **Lumen-to-Fecal Transport (UFEt):** `UFEt_metabolite: metabolite[u] -> metabolite[fe]`, LB = 0, UB = 10000
     4.  **Fecal Exchange:** `EX_metabolite[fe]: metabolite[fe] <=> `, LB = -1000, UB = 10000
 
-#### # Step 1.3: Formulating Biomass Coupling Constraints (`build_global_coupling_constraints()`)
+#### Step 1.3: Formulating Biomass Coupling Constraints (`build_global_coupling_constraints()`)
 
 A standard constraint-based model relies on the stoichiometric matrix $S$ to enforce steady-state mass balance ($S * v = 0$). However, this alone is insufficient for community modeling. For example, a microbial species may be unable to grow in a community (having zero biomass flux) under certain conditions, yet can carry non-zero fluxes for exchange reactions that secrete metabolites into the lumen. This can result in unrealistic solutions particularly for inter-species metabolic interactions. To prevent this, one needs to couple the flux of each reaction within the GEM for each species to the flux of the `biomassXXX` reaction in that species as outlined in (Heinken et. al, But Micorbes 2013). This was implemented in the `build_global_coupling_constraints()` function in `constraints.py`, which introduces additional linear constraints linking the flux of every reaction within a species directly to that organism's growth rate (biomass reaction flux).
 
@@ -72,7 +72,7 @@ A standard constraint-based model relies on the stoichiometric matrix $S$ to enf
 
 *   **Implementation:** Here, $c$ is the **coupling factor** set to `400` and $u$ is a parameter that accounts for the required flux needed to maintain cellular function when the cell is not dividing if $u>0$, following Heinken et al. Gut Microbes (2013) and the `mgPipe` implementation from the MMT. Setting $u$ to 0 ensures that if `v_biomass` is 0, then `v_i` is also forced to 0, making the model more biologically realistic. These rules are compiled into a sparse **coupling matrix (C)** and associated vectors.
 
-#### # Step 1.4: Building the Sample-Specific Models (`build_sample_model()`)
+#### Step 1.4: Building the Sample-Specific Models (`build_sample_model()`)
 
 Finally, `build_sample_model` (in `model_builder.py`) customizes the global model for each individual microbiome sample based on taxonomic profiling results. This function contains the following steps:
 
@@ -91,7 +91,7 @@ The final sample-specific model, complete with all its constraints, is saved as 
 
 This stage, driven by `pipeline.py` calling functions from `simulation.py`, applies dietary constraints and simulates the metabolic potential of the microbiome using FBA simulation of the constructed microbiome GEM.
 
-#### # Step 2.1: Dietary Adjustment (`adapt_vmh_diet_to_agora`)
+#### Step 2.1: Dietary Adjustment (`adapt_vmh_diet_to_agora`)
 
 The `adapt_vmh_diet_to_agora()` function in `diet_adapter.py` pre-processes an in silico diet file to make it compatible with the community models. It renames diet reaction IDs (e.g., `EX_glc(e)` becomes `Diet_EX_glc_D[d]`) and ensures feasibility by adding essential metabolites (`ESSENTIAL_METS`, `UNMAPPED_METS`) and relaxing bounds for certain `MICRONUTRIENTS`.
 
@@ -107,7 +107,7 @@ The `adapt_vmh_diet_to_agora()` function in `diet_adapter.py` pre-processes an i
     * If the micronutrient being considered is one of ['fol', 'arab_L', 'xyl_D', 'amp', 'nh4', 'cobalt2'] and its uptake limit is less than 1 mmol/gDW/h, then its uptake limit is set to 1, otherwise it is left alone
     * These relaxations of constraints are only applied to present micronutrients, none are manually added if not present.
 
-#### # Step 2.2a: The FBA Formulation
+#### Step 2.2a: The FBA Formulation
 
 The `simulate_single_sample()` function in `simulation.py` sets up and solves a constrained Flux Balance Analysis (FBA) problem to predict the set of metabolites that a given microbiome sample can produce and secrete into the lumen. The helper function `build_constraint_matrix()` (in `constraints.py`) illustrates how these components are assembled from the model file.
 
@@ -117,11 +117,11 @@ The `simulate_single_sample()` function in `simulation.py` sets up and solves a 
     2.  **Flux Bounds:** $lb <= v <= ub$, where the lower bounds of diet reactions are set by the diet file.
     3.  **Coupling Constraints:** $C * v <= d$, where $C$ is the coupling matrix built in Stage 1, and $d$ is usually 0, meaning that the constraint is just a relationship between reaction fluxes.
 
-#### # Step 2.2b: Flux Variability Analysis (FVA) - A Deep Dive
+#### Step 2.2b: Flux Variability Analysis (FVA) - A Deep Dive
 
 The goal of FVA is to determine the metabolic flexibility of the community by calculating the minimum and maximum the flux of each reaction while the system remains in a near-optimal state for a given objective function. The implementation of this step is crucial and is handled by` _analyze_metabolite_fluxes()`, which is called within `simulate_single_sample()`. This pipeline contains two parallel implementations for this task, revealing both the underlying mechanics and the practical, high-performance approach.
 
-##### # Part A: The Manual, "From-Scratch" FVA Implementation
+##### Part A: The Manual, "From-Scratch" FVA Implementation
 This approach, preserved in commented-out code within `constraints.py`, demonstrates how the FVA problem is constructed from its fundamental components.
 
 1.  **Assembling the Full Problem (`build_constraint_matrix()`):** This function loads all mathematical components from the `.mat` file: the stoichiometric matrix (`S`), the coupling matrix (`C`), their respective right-hand-side vectors (`b` and `d`), constraint sense vectors (`csense`, `dsense`) that tell you if `constraint_i` is ≤, ≥, or = to `b` and `d`, and reaction bounds (`lb`, `ub`). It combines them into a single, large constraint matrix.
@@ -131,7 +131,7 @@ This approach, preserved in commented-out code within `constraints.py`, demonstr
     *   It then adds a new constraint to the model: $$v_biomass >= 0.9999 * Z_opt$. This forces the model to only consider solutions that achieve near-optimal growth.
     *   Finally, it iterates through every exchange reaction of interest (EX_met[fe] reactions). For each one, it temporarily sets it as the model's objective and solves twice: once to minimize its flux and once to maximize it. This process reveals the full range of metabolic activity possible *while the community is thriving*.
 
-##### # Part B: The Abstracted, High-Performance FVA Implementation
+##### Part B: The Abstracted, High-Performance FVA Implementation
 This is the active method used by the workflow for efficiency. It leverages the highly optimized `cobrapy` library.
 
 1.  **Applying Coupling Constraints (`apply_couple_constraints()`):** This function is the critical bridge. It reads the coupling constraints (`C`, `d`, `dsense`) from the `.mat` file and, using the `optlang` API (a sympy-based optimization modeling language), adds them directly to the `cobra.Model` object's internal solver interface. Once this is done, the COBRA model itself is inherently aware of the coupling rules for all subsequent calculations.
@@ -139,7 +139,21 @@ This is the active method used by the workflow for efficiency. It leverages the 
 
 Both methods solve the same biological problem, but the second approach is used in practice for its performance advantage.
 
-#### # Step 2.4: Reporting Final Fluxes
+*   FVA Quick Reference Table
+
+    | Matrix | What it does         | Example constraint           |
+    |--------|---------------------|-----------------------------|
+    | S      | Mass-balance (core) | S * v = 0                   |
+    | C      | Extra rules/coupling| v_A - 400*v_B ≤ 0           |
+    | d      | RHS of C            | 0 in above example          |
+    | csense, dsense | Constraint type     | 'L' for ≤, 'G' for ≥        |
+
+    **In short:**  
+    - S = mass-balance  
+    - C, d, dsense = extra rules  
+    - FVA with only S is less strict; FVA with C is more realistic!
+
+#### Step 2.4: Reporting Final Fluxes
 
 The FVA results are used by `_analyze_metabolite_fluxes()` to report the following results for each metabolite, consistent with those in the Microbiome Modeling Toolbox. The final values are collected by `collect_flux_profiles()` in `analysis.py`.
 
@@ -153,7 +167,7 @@ The FVA results are used by `_analyze_metabolite_fluxes()` to report the followi
 Additionally, we have decided to report two new outputs:
 
 *   **Min Net Fecal Excretion:** `MinNetFeEx[met] = min_flux_fecal[EX_met[fe]] + min_flux_diet[Diet_EX_met[d]]`
-    * Represents the minimum net fecal secretion potential of the community (worst-case seceraio for secretion) and is defined min fecal secretion – max diet uptake for the metabolite `met`.
+    * Represents the minimum net fecal secretion potential of the community (worst-case scenario for secretion) and is defined min fecal secretion – max diet uptake for the metabolite `met`.
 
 *   **Raw FVA Results:** This simply holds the raw flux values computed from running FVA on the fecal and dietary exchange reactions for each metbolite. This will report the `min_flux_diet`, `max_flux_diet`, `min_flux_fecal`, `max_flux_fecal` as described above.
 

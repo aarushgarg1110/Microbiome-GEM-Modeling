@@ -1,3 +1,18 @@
+Metadata-Version: 2.4
+Name: microbiome-gem-modeling
+Version: 0.1.0
+Summary: Add your description here
+Requires-Python: >=3.10
+Description-Content-Type: text/markdown
+Requires-Dist: cobra==0.29.1
+Requires-Dist: cplex>=22.1.2.0
+Requires-Dist: docplex==2.29.245
+Requires-Dist: numpy==1.26.4
+Requires-Dist: optlang>=1.8.3
+Requires-Dist: pandas==2.2.3
+Requires-Dist: scipy>=1.15.3
+Requires-Dist: tqdm>=4.67.1
+
 # Microbiome-GEM-Modeling
 
 Microbiome-GEM-Modeling is a computational framework for constructing, analyzing, and simulating genome-scale metabolic models (GEMs) of microbial communities. This project enables researchers to integrate metagenomic data, reconstruct metabolic networks, and perform in silico experiments to investigate microbiome function and interactions.
@@ -99,13 +114,12 @@ You can use Microbiome-GEM-Modeling directly in your Python scripts:
 
 2. **Import and run the pipeline in your script:**
     ```python
-    import migemox as mgx
+    import microbiome_gem_modeling as mgx
 
-    mgx.pipeline.run_migemox_pipeline(
+    mgx.pipeline.run_pipeline(
         abun_filepath="test_data_input/normCoverageReduced.csv",
         mod_filepath="test_data_input/AGORA103",
         res_filepath="Results",
-        contr_filepath="Contributions",
         diet_filepath="test_data_input/AverageEU_diet_fluxes.txt",
         workers=2
     )
