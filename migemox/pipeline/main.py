@@ -21,10 +21,11 @@ from migemox.pipeline.io_utils import collect_flux_profiles, extract_positive_ne
 from migemox.downstream_analysis.predict_microbe_contribution import predict_microbe_contributions
 from datetime import datetime, timezone
 
-def run_migemox_pipeline(abun_filepath: str, mod_filepath: str, res_filepath: str,
-                         diet_filepath: str, workers: int = 1, solver: str = 'cplex',
-                         biomass_bounds: tuple = (0.4, 1.0), contr_filepath: str = None,
-                         analyze_contributions: bool = False, fresh_start: bool = False):
+def run_migemox_pipeline(abun_filepath: str, mod_filepath: str, diet_filepath: str,
+                         res_filepath: str = 'Results', workers: int = 1, solver: str = 'cplex',
+                         biomass_bounds: tuple = (0.4, 1.0), contr_filepath: str = 'Contributions',
+                         analyze_contributions: bool = False, fresh_start: bool = False
+                         use_net_production_dict: bool = False):
     """
     Main function to run the MiGEMox pipeline.
 
@@ -103,7 +104,7 @@ def run_migemox_pipeline(abun_filepath: str, mod_filepath: str, res_filepath: st
             solver=solver,
             workers=workers
         )
-        if args.use_net_production_dict: kwargs['net_production_dict'] = pos_net_prod
+        if use_net_production_dict: kwargs['net_production_dict'] = pos_net_prod
         min_fluxes_df, max_fluxes_df, flux_spans_df = predict_microbe_contributions(**kwargs)
         print(f"Strain contribution analysis completed at {datetime.now(tz=timezone.utc)} and results saved.")
 
@@ -151,4 +152,6 @@ if __name__ == "__main__":
         solver=args.solver,
         biomass_bounds=biomass_bounds_tuple,
         analyze_contributions=args.analyze_contributions
+        use_net_production_dict=args.use_net_production_dict
+        fresh_start=args.fresh_start
     )
