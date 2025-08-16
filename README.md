@@ -72,19 +72,18 @@ If you do not have Docker installed, download and install it from [https://www.d
         cobra \
         --abun_filepath /test_data_input/normCoverageReduced.csv \
         --mod_filepath /test_data_input/AGORA103 \
+        --contr_filepath /app/Contributions
         --res_filepath /app/Results \
         --diet_filepath /test_data_input/AverageEU_diet_fluxes.txt \
         --workers 2
+        --solver cplex
+        --biomass_lb 0.4
+        --biomass_ub 1.0
         --analyze_contributions
+        --use_net_production_dict
+        --fresh_start
     ```
-
-   - To run interactively (for debugging or development):
-     ```bash
-     docker run -it --rm -v "${PWD}:/mnt" cobra bash
-     cd ../mnt
-     docplex config --upgrade ./cplex/ibm/ILOG/CPLEX_Studio2212
-     PYTHONPATH=/mnt python src/pipeline/main.py --abun_filepath test_data_input/normCoverageReduced.csv --mod_filepath test_data_input/AGORA103 --res_filepath Results --diet_filepath test_data_input/AverageEU_diet_fluxes.txt --workers 2
-     ```
+    
 
 ## How to Run This Project as a Python Package
 
@@ -107,9 +106,23 @@ You can use Microbiome-GEM-Modeling directly in your Python scripts:
         res_filepath="Results",
         contr_filepath="Contributions",
         diet_filepath="test_data_input/AverageEU_diet_fluxes.txt",
-        workers=2
+        workers=2,
+        solver="cplex"
+        biomass_bounds=(0.4, 1,0),
+        analyze_contributions=True,
+        use_net_production_dict=False,
+        fresh_start=False
     )
     ```
+    You should only need to specify --abun_filepath (-a), --mod_filepath (-m), --diet_filepath (-d). The rest have default parameters.
+    -  workers: int = 1
+    -  solver: str = 'cplex',
+    -  biomass_bounds: tuple = (0.4, 1.0)
+    -  contr_filepath: str = 'Contributions,
+    -  res_filepath: str = 'Results'
+    -  analyze_contributions = 'False'
+    -  fresh_start: bool = False
+    -  use_net_production_dict: bool = False
 For further details on workflow and usage, see [Summary.md](./Summary.md).
 
 
