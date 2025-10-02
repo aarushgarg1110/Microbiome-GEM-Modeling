@@ -66,7 +66,7 @@ If you do not have Docker installed, download and install it from [https://www.d
 
 2. **Run the modeling pipeline:**
     ```bash
-    docker run --rm \
+    docker run \
         -v "${PWD}/Results:/app/Results" \
         -v "${PWD}/Contributions:/app/Contributions" \
         cobra \
@@ -82,6 +82,10 @@ If you do not have Docker installed, download and install it from [https://www.d
         --analyze_contributions
         --use_net_production_dict
         --fresh_start
+        --verbose
+    ```
+    ```bash
+    docker run -v "${PWD}/Results:/app/Results" -v "${PWD}/Contributions:/app/Contributions" cobra --abun_filepath /test_data_input/normCoverageReduced.csv --mod_filepath /test_data_input/AGORA103 --contr_filepath /app/Contributions --res_filepath /app/Results --diet_filepath /test_data_input/AverageEU_diet_fluxes.txt --workers 2 --analyze_contributions
     ```
     
 
@@ -111,7 +115,8 @@ You can use Microbiome-GEM-Modeling directly in your Python scripts:
         biomass_bounds=(0.4, 1,0),
         analyze_contributions=True,
         use_net_production_dict=False,
-        fresh_start=False
+        fresh_start=False,
+        verbose=False
     )
     ```
     You should only need to specify --abun_filepath (-a), --mod_filepath (-m), --diet_filepath (-d). The rest have default parameters.

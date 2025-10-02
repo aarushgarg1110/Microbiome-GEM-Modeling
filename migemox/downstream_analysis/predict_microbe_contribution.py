@@ -36,7 +36,7 @@ def _get_exchange_reactions(model: object, mets_list: Optional[List[str]] = None
         # Only reactions matching provided metabolites
         return [rxn for rxn in all_iex if any(f"IEX_{m}[u]tr" in rxn for m in mets_list)]
 
-def _perform_fva(model: object, model_path: str, rxns_in_model: List[str], solver: str) -> Tuple[Dict[str, float], Dict[str, float]]:
+def _perform_fva(model: object, rxns_in_model: List[str]) -> Tuple[Dict[str, float], Dict[str, float]]:
     """Perform flux variability analysis with fallbacks"""
     try:
         fva_result = flux_variability_analysis(
@@ -116,7 +116,7 @@ def _process_single_model(model_file: Path, diet_mod_dir: str, mets_list: Option
                     orig_lb = ex_rxn.lower_bound
                     ex_rxn.lower_bound = model_fluxes[model_name.split('_')[-1]]
                     # Perform FVA on only IEX rxns associated with current metabolite
-                    minf, maxf = _perform_fva(model, model_path, iex_rxn_ids, solver)
+                    minf, maxf = _perform_fva(model, iex_rxn_ids)
                     min_fluxes.update(minf)
                     max_fluxes.update(maxf)
                     rxns.extend(iex_rxn_ids)
@@ -126,7 +126,7 @@ def _process_single_model(model_file: Path, diet_mod_dir: str, mets_list: Option
             if not rxns_in_model:
                 logger.warning(f"No exchange reactions found in model {model_name}")
                 return None
-            min_fluxes, max_fluxes = _perform_fva(model, model_path, rxns_in_model, solver)
+            min_fluxes, max_fluxes = _perform_fva(model, rxns_in_model)
             rxns = rxns_in_model
         
         return {
@@ -217,9 +217,6 @@ def predict_microbe_contributions(diet_mod_dir: str, res_path: Optional[str] = N
 
     res_path = Path.cwd() / 'Contributions' if not res_path else Path(res_path)
     os.makedirs(res_path, exist_ok=True)
-
-    # Format met_list to match exchange reaction IDs if provided
-    mets_list = [f"IEX_{m}[u]tr" for m in mets_list] if mets_list else None
 
     logger.info(f"Processing models from: {diet_mod_dir}")
     logger.info(f"Results will be saved to: {res_path}")
