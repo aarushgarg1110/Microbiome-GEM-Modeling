@@ -61,10 +61,10 @@ def build_global_coupling_constraints(model: cobra.Model, microbe_list: list[str
 
             rxn_idx = rxn_id_to_index[rxn.id]
 
-            # Create constraint: v_rxn - 400*v_biomass <= 0
-            constraint_row = np.zeros(len(model.reactions))
-            constraint_row[rxn_idx] = 1.0  # coefficient for v_rxn
-            constraint_row[biomass_idx] = -coupling_factor  # coefficient for v_biomass
+            # Create sparse constraint: v_rxn - 400*v_biomass <= 0
+            row_indices = [rxn_idx, biomass_idx]
+            row_data = [1.0, -coupling_factor]
+            constraint_row = csr_matrix((row_data, ([0, 0], row_indices)), shape=(1, len(model.reactions)))
 
             all_constraints.append(constraint_row)
             all_d.append(0.0)
@@ -73,9 +73,9 @@ def build_global_coupling_constraints(model: cobra.Model, microbe_list: list[str
 
             # Also add reverse constraint: v_rxn + 400*v_biomass >= 0 (for reversible reactions)
             if rxn.lower_bound < 0:
-                constraint_row_rev = np.zeros(len(model.reactions))
-                constraint_row_rev[rxn_idx] = 1.0
-                constraint_row_rev[biomass_idx] = coupling_factor
+                row_indices_rev = [rxn_idx, biomass_idx]
+                row_data_rev = [1.0, coupling_factor]
+                constraint_row_rev = csr_matrix((row_data_rev, ([0, 0], row_indices_rev)), shape=(1, len(model.reactions)))
 
                 all_constraints.append(constraint_row_rev)
                 all_d.append(0.0)
@@ -83,7 +83,7 @@ def build_global_coupling_constraints(model: cobra.Model, microbe_list: list[str
                 all_ctrs.append(f"slack_{rxn.id}_R")
 
     if all_constraints:
-        C = csr_matrix(np.vstack(all_constraints))
+        C = vstack(all_constraints)
         d = np.array(all_d).reshape(-1, 1)
         dsense = np.array(all_dsense, dtype='<U1')
         ctrs = np.array(all_ctrs, dtype=object)
